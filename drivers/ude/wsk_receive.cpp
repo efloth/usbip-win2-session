@@ -10,6 +10,7 @@
 #include "wsk_context.h"
 #include "device.h"
 #include "request_list.h"
+#include "urbtransfer.h"
 #include "network.h"
 #include "driver.h"
 #include "ioctl.h"
@@ -29,9 +30,12 @@ namespace
 
 using namespace usbip;
 
-constexpr auto check(_In_ ULONG TransferBufferLength, _In_ int actual_length)
+_IRQL_requires_same_
+_IRQL_requires_(PASSIVE_LEVEL)
+PAGED constexpr auto check(_In_ ULONG TransferBufferLength, _In_ int actual_length)
 {
-	return  actual_length >= 0 && static_cast<ULONG>(actual_length) <= TransferBufferLength ? 
+        PAGED_CODE();
+        return  actual_length >= 0 && static_cast<ULONG>(actual_length) <= TransferBufferLength ? 
 		STATUS_SUCCESS : STATUS_INVALID_BUFFER_SIZE;
 }
 
@@ -300,10 +304,12 @@ PAGED auto isoch_transfer(_In_ wsk_context &ctx, _In_ const header_ret_submit &r
 	UCHAR *buffer{};
 
 	if (is_transfer_dir_in(ctx.hdr)) { // TransferFlags can have wrong direction
-		ULONG length; // full, not actual
-		if (auto err = UdecxUrbRetrieveBuffer(ctx.request, &buffer, &length)) {
-			Trace(TRACE_LEVEL_ERROR, "UdecxUrbRetrieveBuffer %!STATUS!", err);
-			return err;
+                ULONG length; // full, not actual
+                if (auto err = UdecxUrbRetrieveBuffer(ctx.request, &buffer, &length)) {
+                        Trace(TRACE_LEVEL_ERROR, "UdecxUrbRetrieveBuffer(%s) %!STATUS!",
+                                                  urb_function_str(urb.UrbHeader.Function), err);
+
+                        return err;
 		}
 	}
 
@@ -392,16 +398,17 @@ PAGED auto ret_submit_urb(_Inout_ wsk_context &ctx, _In_ const header_ret_submit
 		return isoch_transfer(ctx, ret, urb);
 	}
 
-	UCHAR *TransferBuffer{};
-	ULONG TransferBufferLength{};
+        UCHAR *TransferBuffer{};
+        ULONG TransferBufferLength{};
 
-	if (auto err = UdecxUrbRetrieveBuffer(ctx.request, &TransferBuffer, &TransferBufferLength)) {
+        if (auto err = UdecxUrbRetrieveBuffer(ctx.request, &TransferBuffer, &TransferBufferLength)) {
 		return err == STATUS_INVALID_PARAMETER ? STATUS_SUCCESS : err; // OK if URB has no transfer buffer
 	}
 
-	auto st = STATUS_SUCCESS;
+        TransferBufferLength = AsUrbTransfer(urb).TransferBufferLength; // ignore Length from UdecxUrbRetrieveBuffer
+        auto st = STATUS_SUCCESS;
 
-	if (TransferBufferLength != ULONG(ret.actual_length)) { // prepare_wsk_mdl can set it
+	if (TransferBufferLength != static_cast<ULONG>(ret.actual_length)) { // prepare_wsk_mdl can set it
 		st = assign(TransferBufferLength, ret.actual_length); // DIR_OUT or !actual_length
 		UdecxUrbSetBytesCompleted(ctx.request, TransferBufferLength);
 	}
@@ -454,6 +461,9 @@ PAGED auto make_mdl_chain(_In_ wsk_context &ctx)
  * 
  * Ensure that URB has TransferBuffer and its size is sufficient.
  * Do others checks when payload will be read.
+ *
+ * UdecxUrbRetrieveBuffer can return Length that differs from URB.TransferBufferLength,
+ * which can be rounded by some driver. TransferBufferLength must be used instead.
  * 
  * recv_payload -> prepare_wsk_mdl, there is payload to receive.
  * Payload layout:
@@ -473,16 +483,14 @@ PAGED auto prepare_wsk_mdl(_Out_ MDL* &mdl, _Inout_ wsk_context &ctx, _Inout_ UR
 		return err;
 	}
 
-	UCHAR *TransferBuffer{};
-	ULONG TransferBufferLength{};
+        ULONG TransferBufferLength{};
+        if (UCHAR *buf; auto err = UdecxUrbRetrieveBuffer(ctx.request, &buf, &TransferBufferLength)) { // URB must have transfer buffer
+                Trace(TRACE_LEVEL_ERROR, "UdecxUrbRetrieveBuffer(%s) %!STATUS!", urb_function_str(urb.UrbHeader.Function), err);
+                return err;
+        }
+        TransferBufferLength = AsUrbTransfer(urb).TransferBufferLength; // ignore Length from UdecxUrbRetrieveBuffer
 
-	if (auto err = UdecxUrbRetrieveBuffer(ctx.request, &TransferBuffer, &TransferBufferLength)) { // URB must have transfer buffer
-		Trace(TRACE_LEVEL_ERROR, "UdecxUrbRetrieveBuffer(%s) %!STATUS!", 
-			                  urb_function_str(urb.UrbHeader.Function), err);
-		return err;
-	}
-
-	auto dir_out = is_transfer_dir_out(ctx.hdr);
+        auto dir_out = is_transfer_dir_out(ctx.hdr);
 	bool fail{};
 
 	if (ctx.is_isoc) { // always has payload
