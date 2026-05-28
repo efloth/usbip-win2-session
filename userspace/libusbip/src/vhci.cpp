@@ -266,7 +266,7 @@ auto usbip::vhci::open(_In_ bool overlapped) -> Handle
         }
 
         Handle h;
-        auto path = get_path(vhci::GUID_DEVINTERFACE_USB_HOST_CONTROLLER);
+        auto path = get_path(vhci::USBIP_GUID_DEVINTERFACE_USB_HOST_CONTROLLER);
 
         if (path.empty()) { // if controller is missing, ask the Bus Enumerator to spawn one for this session
                 if (auto bus_path = get_path(vhci::GUID_DEVINTERFACE_USBIP_BUS); !bus_path.empty()) {
@@ -275,7 +275,7 @@ auto usbip::vhci::open(_In_ bool overlapped) -> Handle
                                 DeviceIoControl(bus.get(), ioctl::SPAWN_SESSION_HC, nullptr, 0, nullptr, 0, &bytes, nullptr);
                                 for (int i = 0; i < 50; ++i) { // wait for PnP manager to surface the new isolated device node
                                         Sleep(100);
-                                        if (path = get_path(vhci::GUID_DEVINTERFACE_USB_HOST_CONTROLLER); !path.empty()) {
+                                        if (path = get_path(vhci::USBIP_GUID_DEVINTERFACE_USB_HOST_CONTROLLER); !path.empty()) {
                                                 break;
                                         }
                                 }

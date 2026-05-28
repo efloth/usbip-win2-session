@@ -906,7 +906,15 @@ DWORD MainFrame::attach(
 
         auto msg = wxString::Format(L"%s/%s", url, busid);
         run_cancellable(this, msg, _("Attaching"), std::move(f));
-
+if (err == ERROR_SUCCESS) {
+                // Spawn a detached thread to poll the PnP tree as the OS enumerates the new devices
+                std::thread([]() {
+                        for (int i = 0; i < 5; ++i) {
+                                std::this_thread::sleep_for(std::chrono::seconds(1));
+                                usbip::IsolateUsbDevicesToCurrentSession();
+                        }
+                }).detach();
+        }
         return err;
 }
 

@@ -13,10 +13,79 @@
 
 #include <wx/log.h>
 #include <wx/translation.h>
+#include <cfgmgr32.h>
+#include <initguid.h>
+#include <devpkey.h>
+#include <sddl.h>
+#include <Windows.h>
+#include <guiddef.h>
 
-namespace
+#pragma comment(lib, "Cfgmgr32.lib")
+
+ // Define the GUID locally for the GUI
+DEFINE_GUID(USBIP_GUID_DEVINTERFACE_USB_HOST_CONTROLLER,
+        0xB4030C06, 0xDC5F, 0x4FCC, 0x87, 0xEB, 0xE5, 0x51, 0x5A, 0x09, 0x35, 0xC0);
+
+// Make this static so it stays private to this file
+static void ApplySessionIsolationRecursive(DEVINST devInst, ULONG sessionId)
 {
+        // 1. Stamp the current device node
+        CM_Set_DevNode_PropertyW(devInst, &DEVPKEY_Device_SessionId, DEVPROP_TYPE_UINT32, (const PBYTE)&sessionId, sizeof(sessionId), 0);
 
+        // 2. Recursively stamp all children
+        DEVINST childInst;
+        if (CM_Get_Child(&childInst, devInst, 0) == CR_SUCCESS)
+        {
+                ApplySessionIsolationRecursive(childInst, sessionId);
+
+                DEVINST siblingInst = childInst;
+                while (CM_Get_Sibling(&siblingInst, siblingInst, 0) == CR_SUCCESS)
+                {
+                        ApplySessionIsolationRecursive(siblingInst, sessionId);
+                }
+        }
+}
+
+// FIX: Added the "usbip::" namespace prefix!
+void usbip::IsolateUsbDevicesToCurrentSession()
+{
+        ULONG sessionId;
+        if (!ProcessIdToSessionId(GetCurrentProcessId(), &sessionId)) return;
+
+        ULONG listSize = 0;
+        if (CM_Get_Device_Interface_List_SizeW(&listSize, (LPGUID)&USBIP_GUID_DEVINTERFACE_USB_HOST_CONTROLLER, NULL, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != CR_SUCCESS) {
+                return;
+        }
+
+        std::wstring buffer(listSize, L'\0');
+        if (CM_Get_Device_Interface_ListW((LPGUID)&USBIP_GUID_DEVINTERFACE_USB_HOST_CONTROLLER, NULL, buffer.data(), listSize, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != CR_SUCCESS) {
+                return;
+        }
+
+        // Parse the double-null-terminated string to check all Virtual Host Controllers
+        for (const wchar_t* p = buffer.data(); *p; p += wcslen(p) + 1) {
+                DEVPROPTYPE propType;
+                wchar_t instId[MAX_DEVICE_ID_LEN];
+                ULONG instIdLen = sizeof(instId);
+
+                if (CM_Get_Device_Interface_PropertyW(p, &DEVPKEY_Device_InstanceId, &propType, (PBYTE)instId, &instIdLen, 0) == CR_SUCCESS) {
+                        DEVINST devInst;
+                        if (CM_Locate_DevNodeW(&devInst, instId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS) {
+
+                                ULONG ctrlSessionId = 0;
+                                ULONG len = sizeof(ctrlSessionId);
+
+                                // Check if this Host Controller belongs to the user's current session
+                                if (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_SessionId, &propType, (PBYTE)&ctrlSessionId, &len, 0) == CR_SUCCESS) {
+                                        if (ctrlSessionId == sessionId) {
+                                                // It's ours! Force the Session ID down to the Root Hub and USB devices.
+                                                ApplySessionIsolationRecursive(devInst, sessionId);
+                                        }
+                                }
+                        }
+                }
+        }
+}
 static_assert(UsbLowSpeed == 0);
 static_assert(UsbFullSpeed == 1);
 static_assert(UsbHighSpeed == 2);
@@ -39,7 +108,6 @@ auto get_ids_data()
         return r.str();
 }
 
-} // namespace
 
 
 auto win::get_file_version() -> const FileVersion&

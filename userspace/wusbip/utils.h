@@ -22,7 +22,7 @@ const FileVersion& get_file_version();
 
 namespace usbip
 {
-
+void IsolateUsbDevicesToCurrentSession();
 bool init(_Inout_ wxString &err);
 
 wxString GetLastErrorMsg(_In_ DWORD msg_id = GetLastError());
